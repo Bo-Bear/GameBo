@@ -14,6 +14,15 @@ _HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
     ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+# Cookies Steam expects for store pages (age gate, cookie consent, language).
+_STORE_COOKIES = {
+    "birthtime": "0",
+    "wants_mature_content": "1",
+    "lastagecheckage": "1-0-2000",
+    "Steam_Language": "english",
 }
 
 
@@ -143,6 +152,7 @@ class SteamAPI:
                 async with session.get(
                     "https://store.steampowered.com/search/",
                     params=params,
+                    cookies=_STORE_COOKIES,
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
                     if resp.status != 200:
