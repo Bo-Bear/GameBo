@@ -104,8 +104,14 @@ class IGDBClient:
 
         # Step 1: Find IGDB game IDs from Steam app IDs
         uid_list = ",".join(f'"{aid}"' for aid in steam_app_ids)
-        query = f"fields uid, game; where uid = ({uid_list}) & category = 1; limit {len(steam_app_ids)};"
-        external_games = await self._query("external_games", query)
+        query = f"fields uid, game; where uid = ({uid_list}) & category = 1; limit 500;"
+        try:
+            external_games = await self._query("external_games", query)
+        except Exception as e:
+            logger.warning("[igdb] external_games query failed: %s", e)
+            return {}
+
+        logger.info("[igdb] external_games: %d results for %d app IDs", len(external_games), len(steam_app_ids))
 
         if not external_games:
             return {}
@@ -121,6 +127,7 @@ class IGDBClient:
                 except (ValueError, TypeError):
                     continue
 
+        logger.info("[igdb] mapped %d IGDB game IDs", len(igdb_to_steam))
         if not igdb_to_steam:
             return {}
 
@@ -130,7 +137,13 @@ class IGDBClient:
             f"fields game, onlinecoopmax, onlinemax, offlinecoopmax, offlinemax; "
             f"where game = ({game_ids}); limit 500;"
         )
-        multiplayer_modes = await self._query("multiplayer_modes", query)
+        try:
+            multiplayer_modes = await self._query("multiplayer_modes", query)
+        except Exception as e:
+            logger.warning("[igdb] multiplayer_modes query failed: %s", e)
+            return {}
+
+        logger.info("[igdb] multiplayer_modes: %d results", len(multiplayer_modes))
 
         # Step 3: Extract max player counts
         results: dict[int, int] = {}
@@ -141,19 +154,17 @@ class IGDBClient:
 
             steam_id = igdb_to_steam[game_id]
 
-            # Priority: onlinecoopmax > onlinemax > offlinecoopmax > offlinemax
-            max_players = (
-                mode.get("onlinecoopmax")
-                or mode.get("onlinemax")
-                or mode.get("offlinecoopmax")
-                or mode.get("offlinemax")
-                or 0
-            )
+            vals = [
+                mode.get("onlinecoopmax"),
+                mode.get("onlinemax"),
+                mode.get("offlinecoopmax"),
+                mode.get("offlinemax"),
+            ]
+            vals = [v for v in vals if isinstance(v, int) and v > 0]
+            if vals:
+                results[steam_id] = max(results.get(steam_id, 0), max(vals))
 
-            if max_players > 0:
-                # Keep the highest value if multiple modes exist
-                results[steam_id] = max(results.get(steam_id, 0), max_players)
-
+        logger.info("[igdb] batch result: %d games with player data", len(results))
         return results
 
     async def map_steam_appids(self, steam_app_ids: list[int]) -> dict[int, int]:
