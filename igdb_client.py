@@ -1,7 +1,10 @@
 import asyncio
+import logging
 import time
 import aiohttp
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class IGDBClient:
@@ -209,3 +212,65 @@ class IGDBClient:
                     result[gid] = max(result.get(gid, 0), max(vals))
 
         return result
+
+    async def find_multiplayer_games(self, min_players: int, limit: int = 100) -> list[dict]:
+        """Find popular multiplayer games with Steam app IDs using separate queries.
+
+        Returns a list of dicts with keys: name, steam_app_id, max_players.
+        """
+        # Step 1: Get popular games that have multiplayer modes
+        games_query = (
+            "fields id, name; "
+            "where multiplayer_modes != null & category = 0; "
+            "sort total_rating_count desc; "
+            "limit 500;"
+        )
+        games = await self._query("games", games_query)
+        logger.info("[igdb] Step 1 - games with multiplayer: %d", len(games))
+        if not games:
+            return []
+
+        game_names = {g["id"]: g.get("name", "Unknown") for g in games}
+        igdb_ids = list(game_names.keys())
+
+        # Step 2: Get multiplayer modes and filter by min_players
+        igdb_to_max = await self.get_multiplayer_max_players(igdb_ids)
+        # Filter to games meeting min_players threshold
+        matching = {gid: mp for gid, mp in igdb_to_max.items() if mp >= min_players}
+        logger.info("[igdb] Step 2 - multiplayer modes >= %d players: %d/%d",
+                     min_players, len(matching), len(igdb_to_max))
+        if not matching:
+            return []
+
+        # Step 3: Get Steam app IDs for matching games
+        matching_ids = list(matching.keys())
+        # Query external_games in batches
+        igdb_to_steam: dict[int, int] = {}
+        for i in range(0, len(matching_ids), self.MAX_BATCH_SIZE):
+            batch = matching_ids[i : i + self.MAX_BATCH_SIZE]
+            ids_str = ",".join(str(gid) for gid in batch)
+            query = (
+                f"fields uid, game; "
+                f"where game = ({ids_str}) & category = 1; "
+                f"limit 500;"
+            )
+            rows = await self._query("external_games", query)
+            for row in rows:
+                try:
+                    igdb_to_steam[int(row["game"])] = int(row["uid"])
+                except (ValueError, TypeError, KeyError):
+                    continue
+
+        logger.info("[igdb] Step 3 - have Steam app IDs: %d/%d", len(igdb_to_steam), len(matching))
+
+        # Step 4: Combine
+        results = []
+        for gid, steam_app_id in igdb_to_steam.items():
+            results.append({
+                "name": game_names.get(gid, "Unknown"),
+                "steam_app_id": steam_app_id,
+                "max_players": matching[gid],
+            })
+
+        results.sort(key=lambda g: (-g["max_players"], g["name"]))
+        return results[:limit]

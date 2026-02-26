@@ -189,21 +189,19 @@ class SteamAPI:
     async def confirm_free_games(self, app_ids: list[int]) -> list[dict]:
         """Confirm which app IDs are free games via appdetails.
 
-        Returns a list of dicts with keys: app_id, name for confirmed free games.
+        Checks sequentially (one at a time) with 1-second delays to avoid
+        Steam rate limiting. Returns a list of dicts with keys: app_id, name.
         """
         confirmed: list[dict] = []
         session = await self._get_session()
 
-        for i in range(0, len(app_ids), 5):
-            batch = app_ids[i : i + 5]
-            results = await asyncio.gather(
-                *(self._get_appdetails(session, aid) for aid in batch)
-            )
-            for result in results:
-                if result is not None:
-                    confirmed.append(result)
-            if i + 5 < len(app_ids):
-                await asyncio.sleep(0.3)
+        for i, app_id in enumerate(app_ids):
+            result = await self._get_appdetails(session, app_id)
+            if result is not None:
+                confirmed.append(result)
+            # 1-second delay between requests to stay under rate limit
+            if i < len(app_ids) - 1:
+                await asyncio.sleep(1.0)
 
         return confirmed
 
@@ -215,9 +213,12 @@ class SteamAPI:
         params = {"appids": str(app_id), "l": "english", "cc": "US"}
         try:
             async with session.get(
-                url, params=params, timeout=aiohttp.ClientTimeout(total=30)
+                url, params=params,
+                cookies=_STORE_COOKIES,
+                timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status != 200:
+                    logger.debug("appdetails HTTP %d for %s", resp.status, app_id)
                     return None
                 # content_type=None: Steam sometimes returns text/html content-type
                 data = await resp.json(content_type=None)
@@ -225,8 +226,6 @@ class SteamAPI:
             if not app_data.get("success"):
                 return None
             details = app_data.get("data", {})
-            if details.get("type") != "game":
-                return None
             if not details.get("is_free"):
                 return None
             return {"app_id": app_id, "name": details.get("name", f"App {app_id}")}
