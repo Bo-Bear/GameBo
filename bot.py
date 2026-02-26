@@ -206,11 +206,25 @@ class GamerSelect(discord.ui.Select):
                 + "\n".join(game_lines[:15])
             )
             if len(game_lines) > 15:
-                for i in range(15, len(game_lines), 15):
-                    chunk = game_lines[i : i + 15]
+                remaining = game_lines[15:]
+                page = 2
+                current_chunk = []
+                for line in remaining:
+                    candidate = "\n".join(current_chunk + [line])
+                    if len(candidate) > 1024 and current_chunk:
+                        embed.add_field(
+                            name=f"Page {page}",
+                            value="\n".join(current_chunk),
+                            inline=False,
+                        )
+                        page += 1
+                        current_chunk = [line]
+                    else:
+                        current_chunk.append(line)
+                if current_chunk:
                     embed.add_field(
-                        name=f"Page {i // 15 + 1}",
-                        value="\n".join(chunk),
+                        name=f"Page {page}",
+                        value="\n".join(current_chunk),
                         inline=False,
                     )
         else:
@@ -220,17 +234,24 @@ class GamerSelect(discord.ui.Select):
 
         # Section 2: Multiplayer games with unknown player count
         if unknown_games:
+            suffix = "\n\nUse `/override` to set player counts."
             unknown_lines = []
-            for g in unknown_games[:10]:
+            for g in unknown_games:
                 store_url = f"https://store.steampowered.com/app/{g['app_id']}"
-                unknown_lines.append(f"[{g['name']}]({store_url})")
+                line = f"[{g['name']}]({store_url})"
+                # Stop adding if the next line would exceed Discord's 1024-char field limit
+                candidate = "\n".join(unknown_lines + [line]) + suffix
+                if len(candidate) > 1024:
+                    break
+                unknown_lines.append(line)
 
+            shown = len(unknown_lines)
             label = "Multiplayer — player count unknown"
-            if len(unknown_games) > 10:
-                label += f" (showing 10 of {len(unknown_games)})"
+            if shown < len(unknown_games):
+                label += f" (showing {shown} of {len(unknown_games)})"
             embed.add_field(
                 name=label,
-                value="\n".join(unknown_lines) + "\n\nUse `/override` to set player counts.",
+                value="\n".join(unknown_lines) + suffix,
                 inline=False,
             )
 
