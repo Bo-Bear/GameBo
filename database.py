@@ -1,5 +1,8 @@
+import logging
 import aiosqlite
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = "gamebo.db"
 
@@ -144,8 +147,36 @@ class Database:
         """
         params = [*steam_ids, min_players, len(steam_ids)]
 
+        # Debug: count common games ignoring player count
+        debug_query = f"""
+            SELECT COUNT(DISTINCT g.app_id) as cnt
+            FROM gamer_games gg
+            JOIN games g ON gg.app_id = g.app_id
+            WHERE gg.steam_id IN ({placeholders})
+            GROUP BY g.app_id
+            HAVING COUNT(DISTINCT gg.steam_id) = ?
+        """
+        async with self._db.execute(debug_query, [*steam_ids, len(steam_ids)]) as cursor:
+            debug_rows = await cursor.fetchall()
+            logger.info("[db] Common games (all %d gamers own): %d", len(steam_ids), len(debug_rows))
+
+        # Debug: how many of those have player count data
+        debug_query2 = f"""
+            SELECT COUNT(DISTINCT g.app_id) as cnt
+            FROM gamer_games gg
+            JOIN games g ON gg.app_id = g.app_id
+            WHERE gg.steam_id IN ({placeholders})
+              AND g.max_players IS NOT NULL
+            GROUP BY g.app_id
+            HAVING COUNT(DISTINCT gg.steam_id) = ?
+        """
+        async with self._db.execute(debug_query2, [*steam_ids, len(steam_ids)]) as cursor:
+            debug_rows2 = await cursor.fetchall()
+            logger.info("[db] Common games with player data: %d", len(debug_rows2))
+
         async with self._db.execute(query, params) as cursor:
             rows = await cursor.fetchall()
+            logger.info("[db] Common games with %d+ players: %d", min_players, len(rows))
             return [
                 {"app_id": row["app_id"], "name": row["name"], "max_players": row["max_players"]}
                 for row in rows

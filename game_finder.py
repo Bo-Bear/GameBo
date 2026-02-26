@@ -57,6 +57,7 @@ class GameFinder:
 
         # Find games still missing player counts
         missing = await self.db.get_games_missing_player_count()
+        logger.info("[player_counts] Games missing player count: %d", len(missing))
         if not missing:
             return len(overrides)
 
@@ -65,6 +66,7 @@ class GameFinder:
 
         # Query IGDB in batches
         igdb_results = await self.igdb.get_max_players_batch(missing)
+        logger.info("[player_counts] IGDB returned player data for %d/%d games", len(igdb_results), len(missing))
         if igdb_results:
             await self.db.update_max_players_bulk(igdb_results)
 
