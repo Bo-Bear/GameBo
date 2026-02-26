@@ -88,6 +88,14 @@ class IGDBClient:
         Returns a dict mapping steam_app_id -> max_players.
         Only includes games where player count data was found.
         """
+        # Sanity check: test with a known game (CS2 = 730)
+        test_query = 'fields uid, game; where uid = "730" & category = 1; limit 1;'
+        try:
+            test_result = await self._query("external_games", test_query)
+            logger.info("[igdb] Sanity check (CS2/730): %s", test_result)
+        except Exception as e:
+            logger.warning("[igdb] Sanity check failed: %s", e)
+
         results: dict[int, int] = {}
 
         for i in range(0, len(steam_app_ids), self.MAX_BATCH_SIZE):
@@ -105,13 +113,17 @@ class IGDBClient:
         # Step 1: Find IGDB game IDs from Steam app IDs
         uid_list = ",".join(f'"{aid}"' for aid in steam_app_ids)
         query = f"fields uid, game; where uid = ({uid_list}) & category = 1; limit 500;"
+        logger.debug("[igdb] external_games query: %s", query[:300])
+        logger.info("[igdb] sample app IDs in batch: %s", steam_app_ids[:5])
         try:
             external_games = await self._query("external_games", query)
         except Exception as e:
             logger.warning("[igdb] external_games query failed: %s", e)
             return {}
 
-        logger.info("[igdb] external_games: %d results for %d app IDs", len(external_games), len(steam_app_ids))
+        logger.info("[igdb] external_games: %d results for %d app IDs (raw: %s)",
+                     len(external_games), len(steam_app_ids),
+                     external_games[:3] if external_games else "[]")
 
         if not external_games:
             return {}
