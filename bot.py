@@ -19,6 +19,7 @@ load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 STEAM_API_KEY = os.getenv("STEAM_API_KEY", "")
+GUILD_ID = os.getenv("GUILD_ID", "")
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID", "")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET", "")
 GAMERS_PATH = Path(__file__).parent / "gamers.json"
@@ -66,7 +67,12 @@ async def on_ready():
     await db.connect()
     finder = GameFinder(steam, igdb, db)
 
-    await bot.tree.sync()
+    if GUILD_ID:
+        guild = discord.Object(id=int(GUILD_ID))
+        bot.tree.copy_global_to(guild=guild)
+        await bot.tree.sync(guild=guild)
+    else:
+        await bot.tree.sync()
     print(f"GameBo is online as {bot.user}")
 
 
