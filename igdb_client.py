@@ -88,13 +88,20 @@ class IGDBClient:
         Returns a dict mapping steam_app_id -> max_players.
         Only includes games where player count data was found.
         """
-        # Sanity check: test with a known game (CS2 = 730)
-        test_query = 'fields uid, game; where uid = "730" & category = 1; limit 1;'
-        try:
-            test_result = await self._query("external_games", test_query)
-            logger.info("[igdb] Sanity check (CS2/730): %s", test_result)
-        except Exception as e:
-            logger.warning("[igdb] Sanity check failed: %s", e)
+        # Diagnostic: test external_games in multiple ways
+        diag_queries = {
+            "CS2 with category": 'fields uid, game, category; where uid = "730" & category = 1; limit 5;',
+            "CS2 no category": 'fields uid, game, category; where uid = "730"; limit 5;',
+            "any Steam entries": 'fields uid, game, category; where category = 1; sort id desc; limit 5;',
+            "search CS2 game": 'fields id, name, external_games; where name ~ "Counter-Strike"; limit 5;',
+        }
+        for label, q in diag_queries.items():
+            try:
+                endpoint = "games" if "search" in label else "external_games"
+                result = await self._query(endpoint, q)
+                logger.info("[igdb] Diag '%s': %s", label, result[:3] if result else "[]")
+            except Exception as e:
+                logger.warning("[igdb] Diag '%s' failed: %s", label, e)
 
         results: dict[int, int] = {}
 
