@@ -332,7 +332,7 @@ class FreeGamesModal(discord.ui.Modal, title="Find Free-to-Play Games"):
         await interaction.response.defer(thinking=True)
 
         try:
-            games = await igdb.find_free_multiplayer_games(count)
+            games = await finder.find_free_multiplayer_games(count)
         except Exception as e:
             await interaction.followup.send(f"Error searching for games: {e}")
             return
@@ -350,11 +350,8 @@ class FreeGamesModal(discord.ui.Modal, title="Find Free-to-Play Games"):
 
         game_lines = []
         for g in games:
-            url = g["url"]
-            if url:
-                game_lines.append(f"[{g['name']}]({url}) — up to **{g['max_players']}** players")
-            else:
-                game_lines.append(f"{g['name']} — up to **{g['max_players']}** players")
+            store_url = f"https://store.steampowered.com/app/{g['app_id']}"
+            game_lines.append(f"[{g['name']}]({store_url}) — up to **{g['max_players']}** players")
 
         chunk_size = 15
         if len(game_lines) <= chunk_size:

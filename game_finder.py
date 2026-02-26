@@ -78,3 +78,35 @@ class GameFinder:
             min_players = len(steam_ids)
 
         return await self.db.find_common_games(steam_ids, min_players)
+
+    async def find_free_multiplayer_games(
+        self, min_players: int, limit: int = 25
+    ) -> list[dict]:
+        """Find free-to-play games that support at least min_players players.
+
+        Searches Steam store for free multiplayer games, then queries IGDB
+        for player count data to filter by the requested player count.
+        Returns a list of dicts with keys: name, app_id, max_players.
+        """
+        # Step 1: Get free multiplayer games from Steam store
+        free_games = await self.steam.search_free_multiplayer_games()
+        if not free_games:
+            return []
+
+        # Step 2: Look up player counts from IGDB
+        app_ids = [g["app_id"] for g in free_games]
+        player_counts = await self.igdb.get_max_players_batch(app_ids)
+
+        # Step 3: Combine and filter by requested player count
+        results = []
+        for game in free_games:
+            max_players = player_counts.get(game["app_id"], 0)
+            if max_players >= min_players:
+                results.append({
+                    "name": game["name"],
+                    "app_id": game["app_id"],
+                    "max_players": max_players,
+                })
+
+        results.sort(key=lambda g: (-g["max_players"], g["name"]))
+        return results[:limit]

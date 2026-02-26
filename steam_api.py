@@ -1,3 +1,5 @@
+import re
+
 import aiohttp
 from typing import Optional
 
@@ -103,3 +105,37 @@ class SteamAPI:
         if response.get("success") == 1:
             return response.get("steamid")
         return None
+
+    async def search_free_multiplayer_games(self, count: int = 100) -> list[dict]:
+        """Search the Steam store for free-to-play multiplayer games.
+
+        Returns a list of dicts with keys: app_id, name.
+        """
+        session = await self._get_session()
+        url = "https://store.steampowered.com/search/results/"
+        params = {
+            "json": "1",
+            "maxprice": "free",
+            "category3": "1",  # Multi-player
+            "sort_by": "Reviews_DESC",
+            "count": str(count),
+            "start": "0",
+            "cc": "us",
+            "l": "english",
+        }
+
+        async with session.get(url, params=params) as resp:
+            if resp.status != 200:
+                return []
+            data = await resp.json()
+
+        html = data.get("results_html", "")
+        app_ids = re.findall(r'data-ds-appid="(\d+)"', html)
+        names = re.findall(r'<span class="title">([^<]+)</span>', html)
+
+        results = []
+        for i, app_id_str in enumerate(app_ids):
+            name = names[i] if i < len(names) else f"Unknown ({app_id_str})"
+            results.append({"app_id": int(app_id_str), "name": name})
+
+        return results
