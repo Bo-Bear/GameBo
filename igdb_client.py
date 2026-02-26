@@ -293,7 +293,6 @@ class IGDBClient:
     async def map_steam_appids(self, steam_app_ids: list[int]) -> dict[int, int]:
         """Map Steam app IDs to IGDB game IDs via external_games endpoint.
 
-        Uses category = 1 (Steam) in IGDB's external_games table.
         Returns a dict mapping steam_app_id -> igdb_game_id.
         """
         result: dict[int, int] = {}
@@ -303,7 +302,7 @@ class IGDBClient:
             uid_list = ",".join(f'"{aid}"' for aid in batch)
             query = (
                 f"fields uid, game; "
-                f"where uid = ({uid_list}) & category = 1; "
+                f"where uid = ({uid_list}); "
                 f"limit {len(batch)};"
             )
             rows = await self._query("external_games", query)
@@ -377,15 +376,17 @@ class IGDBClient:
             return []
 
         # Step 3: Get Steam app IDs for matching games
+        # Drop category=1 filter — many IGDB entries are untagged (category=0).
+        # Non-Steam UIDs are filtered out by the int() parse and the downstream
+        # Steam API check.
         matching_ids = list(matching.keys())
-        # Query external_games in batches
         igdb_to_steam: dict[int, int] = {}
         for i in range(0, len(matching_ids), self.MAX_BATCH_SIZE):
             batch = matching_ids[i : i + self.MAX_BATCH_SIZE]
             ids_str = ",".join(str(gid) for gid in batch)
             query = (
                 f"fields uid, game; "
-                f"where game = ({ids_str}) & category = 1; "
+                f"where game = ({ids_str}); "
                 f"limit 500;"
             )
             rows = await self._query("external_games", query)
