@@ -6,7 +6,6 @@ from pathlib import Path
 import discord
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -76,44 +75,7 @@ async def on_ready():
     print(f"GameBo is online as {bot.user}")
 
 
-# -- Autocomplete helper --
-
-async def gamer_autocomplete(
-    interaction: discord.Interaction, current: str
-) -> list[app_commands.Choice[str]]:
-    """Autocomplete for gamer names."""
-    names = get_gamer_names()
-    return [
-        app_commands.Choice(name=n, value=n)
-        for n in names
-        if current.lower() in n.lower()
-    ][:25]
-
-
 # -- Slash commands --
-
-
-@bot.tree.command(name="gamers", description="List all configured gamers")
-async def cmd_gamers(interaction: discord.Interaction):
-    gamers = load_gamers()
-    if not gamers:
-        await interaction.response.send_message(
-            "No gamers configured yet. Add them to `gamers.json`.", ephemeral=True
-        )
-        return
-
-    embed = discord.Embed(title="Configured Gamers", color=0x1B2838)
-    for g in gamers:
-        steam_id = g["steam_id"]
-        profile_url = f"https://steamcommunity.com/profiles/{steam_id}"
-        embed.add_field(
-            name=g["name"],
-            value=f"[Steam Profile]({profile_url})",
-            inline=True,
-        )
-    embed.set_footer(text=f"{len(gamers)} gamer(s) configured")
-    await interaction.response.send_message(embed=embed)
-
 
 class GamerSelect(discord.ui.Select):
     """Multi-select dropdown for picking gamers."""
@@ -207,23 +169,21 @@ class GamerSelect(discord.ui.Select):
             )
             if len(game_lines) > 15:
                 remaining = game_lines[15:]
-                page = 2
                 current_chunk = []
                 for line in remaining:
                     candidate = "\n".join(current_chunk + [line])
                     if len(candidate) > 1024 and current_chunk:
                         embed.add_field(
-                            name=f"Page {page}",
+                            name="\u200b",
                             value="\n".join(current_chunk),
                             inline=False,
                         )
-                        page += 1
                         current_chunk = [line]
                     else:
                         current_chunk.append(line)
                 if current_chunk:
                     embed.add_field(
-                        name=f"Page {page}",
+                        name="\u200b",
                         value="\n".join(current_chunk),
                         inline=False,
                     )
@@ -234,7 +194,7 @@ class GamerSelect(discord.ui.Select):
 
         # Section 2: Multiplayer games with unknown player count
         if unknown_games:
-            suffix = "\n\nUse `/override` to set player counts."
+            suffix = "\n\nEdit `player_overrides.json` to set player counts."
             unknown_lines = []
             for g in unknown_games:
                 store_url = f"https://store.steampowered.com/app/{g['app_id']}"
@@ -280,105 +240,6 @@ async def cmd_gamenight(interaction: discord.Interaction):
         "**Who's playing tonight?** Select gamers below:",
         view=GamerSelectView(),
     )
-
-
-@bot.tree.command(name="override", description="Manually set the max player count for a game")
-@app_commands.describe(
-    game_name="Name of the game (search by partial match)",
-    max_players="Maximum number of co-op players",
-)
-async def cmd_override(interaction: discord.Interaction, game_name: str, max_players: int):
-    if max_players < 1:
-        await interaction.response.send_message("Max players must be at least 1.", ephemeral=True)
-        return
-
-    # Search for matching games in the database
-    await interaction.response.defer(ephemeral=True)
-
-    # Load overrides file
-    overrides_path = Path(__file__).parent / "player_overrides.json"
-    overrides = {}
-    if overrides_path.exists():
-        with open(overrides_path) as f:
-            overrides = json.load(f)
-
-    # Find matching games from the database
-    from database import Database as _DB
-
-    async with db._db.execute(
-        "SELECT app_id, name FROM games WHERE LOWER(name) LIKE ?",
-        (f"%{game_name.lower()}%",),
-    ) as cursor:
-        rows = await cursor.fetchall()
-
-    if not rows:
-        await interaction.followup.send(
-            f"No games found matching **{game_name}**. Run `/scan` first."
-        )
-        return
-
-    if len(rows) > 10:
-        matches = "\n".join(f"• {r['name']}" for r in rows[:10])
-        await interaction.followup.send(
-            f"Too many matches ({len(rows)}). Be more specific:\n{matches}\n..."
-        )
-        return
-
-    # If exactly one match, apply it directly
-    if len(rows) == 1:
-        app_id = rows[0]["app_id"]
-        name = rows[0]["name"]
-        overrides[str(app_id)] = max_players
-        with open(overrides_path, "w") as f:
-            json.dump(overrides, f, indent=2)
-        await db.update_max_players_bulk({app_id: max_players})
-        await interaction.followup.send(
-            f"Set **{name}** max players to **{max_players}**."
-        )
-        return
-
-    # Multiple matches — show them and ask user to be more specific
-    matches = "\n".join(f"• {r['name']}" for r in rows)
-    await interaction.followup.send(
-        f"Multiple matches found. Be more specific:\n{matches}"
-    )
-
-
-@bot.tree.command(name="gameinfo", description="Show info about a specific game")
-@app_commands.describe(game_name="Name of the game (search by partial match)")
-async def cmd_gameinfo(interaction: discord.Interaction, game_name: str):
-    await interaction.response.defer()
-
-    async with db._db.execute(
-        "SELECT app_id, name, max_players FROM games WHERE LOWER(name) LIKE ?",
-        (f"%{game_name.lower()}%",),
-    ) as cursor:
-        rows = await cursor.fetchall()
-
-    if not rows:
-        await interaction.followup.send(f"No games found matching **{game_name}**. Run `/scan` first.")
-        return
-
-    # Show top 5 matches
-    embed = discord.Embed(title=f"Search: {game_name}", color=0x1B2838)
-    for row in rows[:5]:
-        store_url = f"https://store.steampowered.com/app/{row['app_id']}"
-        mp = row["max_players"]
-        if mp == -1:
-            player_info = "**Multiplayer** (count unknown)"
-        elif mp and mp > 0:
-            player_info = f"**{mp}** players"
-        else:
-            player_info = "Unknown"
-        embed.add_field(
-            name=row["name"],
-            value=f"Max co-op: {player_info}\n[Store page]({store_url})",
-            inline=False,
-        )
-
-    if len(rows) > 5:
-        embed.set_footer(text=f"Showing 5 of {len(rows)} matches")
-    await interaction.followup.send(embed=embed)
 
 
 class FreeGamesModal(discord.ui.Modal, title="Find Free-to-Play Games"):
@@ -428,23 +289,21 @@ class FreeGamesModal(discord.ui.Modal, title="Find Free-to-Play Games"):
             embed.description = "\n".join(game_lines)
         else:
             embed.description = f"**{len(game_lines)} games found:**"
-            page = 1
             current_chunk = []
             for line in game_lines:
                 candidate = "\n".join(current_chunk + [line])
                 if len(candidate) > 1024 and current_chunk:
                     embed.add_field(
-                        name=f"Page {page}",
+                        name="\u200b",
                         value="\n".join(current_chunk),
                         inline=False,
                     )
-                    page += 1
                     current_chunk = [line]
                 else:
                     current_chunk.append(line)
             if current_chunk:
                 embed.add_field(
-                    name=f"Page {page}",
+                    name="\u200b",
                     value="\n".join(current_chunk),
                     inline=False,
                 )
@@ -456,17 +315,6 @@ class FreeGamesModal(discord.ui.Modal, title="Find Free-to-Play Games"):
 @bot.tree.command(name="freegames", description="Find free-to-play games for a given number of players")
 async def cmd_freegames(interaction: discord.Interaction):
     await interaction.response.send_modal(FreeGamesModal())
-
-
-@bot.tree.command(name="refresh", description="Re-fetch player counts from IGDB for games missing data")
-async def cmd_refresh(interaction: discord.Interaction):
-    await interaction.response.defer(thinking=True)
-
-    try:
-        updated = await finder.fetch_player_counts()
-        await interaction.followup.send(f"Player count data updated for **{updated}** game(s).")
-    except Exception as e:
-        await interaction.followup.send(f"Error fetching player counts: {e}")
 
 
 # -- Shutdown --
