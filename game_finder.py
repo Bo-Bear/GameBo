@@ -84,29 +84,29 @@ class GameFinder:
     ) -> list[dict]:
         """Find free-to-play games that support at least min_players players.
 
-        Searches Steam store for free multiplayer games, then queries IGDB
-        for player count data to filter by the requested player count.
+        Queries IGDB for popular multiplayer games, then checks Steam pricing
+        to filter down to only free-to-play titles.
         Returns a list of dicts with keys: name, app_id, max_players.
         """
-        # Step 1: Get free multiplayer games from Steam store
-        free_games = await self.steam.search_free_multiplayer_games()
-        if not free_games:
+        # Step 1: Get popular multiplayer games from IGDB with Steam IDs
+        candidates = await self.igdb.find_multiplayer_games(min_players)
+        if not candidates:
             return []
 
-        # Step 2: Look up player counts from IGDB
-        app_ids = [g["app_id"] for g in free_games]
-        player_counts = await self.igdb.get_max_players_batch(app_ids)
+        # Step 2: Check which are free on Steam
+        app_ids = [g["steam_app_id"] for g in candidates]
+        free_ids = await self.steam.check_free_apps(app_ids)
 
-        # Step 3: Combine and filter by requested player count
-        results = []
-        for game in free_games:
-            max_players = player_counts.get(game["app_id"], 0)
-            if max_players >= min_players:
-                results.append({
-                    "name": game["name"],
-                    "app_id": game["app_id"],
-                    "max_players": max_players,
-                })
+        # Step 3: Filter to only free games
+        results = [
+            {
+                "name": g["name"],
+                "app_id": g["steam_app_id"],
+                "max_players": g["max_players"],
+            }
+            for g in candidates
+            if g["steam_app_id"] in free_ids
+        ]
 
         results.sort(key=lambda g: (-g["max_players"], g["name"]))
         return results[:limit]

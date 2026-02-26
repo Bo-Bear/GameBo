@@ -1,4 +1,4 @@
-import re
+import asyncio
 
 import aiohttp
 from typing import Optional
@@ -106,36 +106,29 @@ class SteamAPI:
             return response.get("steamid")
         return None
 
-    async def search_free_multiplayer_games(self, count: int = 100) -> list[dict]:
-        """Search the Steam store for free-to-play multiplayer games.
+    async def check_free_apps(self, app_ids: list[int]) -> set[int]:
+        """Check which Steam app IDs are free-to-play using appdetails pricing.
 
-        Returns a list of dicts with keys: app_id, name.
+        Returns a set of app IDs that are free.
         """
+        free_ids: set[int] = set()
         session = await self._get_session()
-        url = "https://store.steampowered.com/search/results/"
-        params = {
-            "json": "1",
-            "maxprice": "free",
-            "category3": "1",  # Multi-player
-            "sort_by": "Reviews_DESC",
-            "count": str(count),
-            "start": "0",
-            "cc": "us",
-            "l": "english",
-        }
+        semaphore = asyncio.Semaphore(5)
 
-        async with session.get(url, params=params) as resp:
-            if resp.status != 200:
-                return []
-            data = await resp.json()
+        async def _check_one(app_id: int):
+            async with semaphore:
+                url = "https://store.steampowered.com/api/appdetails"
+                params = {"appids": str(app_id), "filters": "basic"}
+                try:
+                    async with session.get(url, params=params) as resp:
+                        if resp.status != 200:
+                            return
+                        data = await resp.json()
+                    app_data = data.get(str(app_id), {})
+                    if app_data.get("success") and app_data.get("data", {}).get("is_free"):
+                        free_ids.add(app_id)
+                except Exception:
+                    pass
 
-        html = data.get("results_html", "")
-        app_ids = re.findall(r'data-ds-appid="(\d+)"', html)
-        names = re.findall(r'<span class="title">([^<]+)</span>', html)
-
-        results = []
-        for i, app_id_str in enumerate(app_ids):
-            name = names[i] if i < len(names) else f"Unknown ({app_id_str})"
-            results.append({"app_id": int(app_id_str), "name": name})
-
-        return results
+        await asyncio.gather(*(_check_one(aid) for aid in app_ids))
+        return free_ids

@@ -152,3 +152,62 @@ class IGDBClient:
                 results[steam_id] = max(results.get(steam_id, 0), max_players)
 
         return results
+
+    async def find_multiplayer_games(self, min_players: int, limit: int = 100) -> list[dict]:
+        """Find popular games with multiplayer support for at least min_players.
+
+        Queries IGDB for games with multiplayer modes, expands external_games
+        to get Steam app IDs, and filters by player count.
+        Returns a list of dicts with keys: name, steam_app_id, max_players.
+        """
+        query = (
+            "fields name, "
+            "external_games.uid, external_games.category, "
+            "multiplayer_modes.onlinecoopmax, multiplayer_modes.onlinemax, "
+            "multiplayer_modes.offlinecoopmax, multiplayer_modes.offlinemax; "
+            "where multiplayer_modes != null & category = 0 & external_games != null; "
+            "sort total_rating_count desc; "
+            "limit 500;"
+        )
+        games = await self._query("games", query)
+
+        if not games:
+            return []
+
+        results = []
+        for game in games:
+            # Get max player count
+            modes = game.get("multiplayer_modes", [])
+            max_players = 0
+            for mode in modes:
+                if isinstance(mode, dict):
+                    mp = (
+                        mode.get("onlinecoopmax")
+                        or mode.get("onlinemax")
+                        or mode.get("offlinecoopmax")
+                        or mode.get("offlinemax")
+                        or 0
+                    )
+                    max_players = max(max_players, mp)
+
+            if max_players < min_players:
+                continue
+
+            # Find Steam app ID from external_games (category 1 = Steam)
+            steam_app_id = None
+            for eg in game.get("external_games", []):
+                if isinstance(eg, dict) and eg.get("category") == 1:
+                    try:
+                        steam_app_id = int(eg["uid"])
+                        break
+                    except (ValueError, TypeError, KeyError):
+                        continue
+
+            if steam_app_id:
+                results.append({
+                    "name": game.get("name", "Unknown"),
+                    "steam_app_id": steam_app_id,
+                    "max_players": max_players,
+                })
+
+        return results[:limit]
