@@ -39,6 +39,14 @@ _MULTIPLAYER_CATEGORY_IDS = {
     44,  # Remote Play Together
 }
 
+# Description-text fallback in case category IDs ever drift.
+_MULTIPLAYER_DESCRIPTIONS = {
+    "multi-player", "co-op", "mmo", "online multi-player",
+    "local multi-player", "online co-op", "local co-op",
+    "cross-platform multiplayer", "remote play together",
+    "online pvp", "local pvp",
+}
+
 
 class SteamAPI:
     """Client for the Steam Web API."""
@@ -259,8 +267,9 @@ class SteamAPI:
     async def get_multiplayer_tags(self, app_ids: list[int]) -> dict[int, int]:
         """Check Steam appdetails for multiplayer categories.
 
-        Returns dict mapping app_id -> estimated max_players.
-        Multiplayer games get 4 (conservative default), single-player gets 1.
+        Returns dict mapping app_id -> max_players sentinel:
+          -1 = confirmed multiplayer (count unknown)
+           1 = single-player only (or non-game)
         Queries sequentially with 1s delay for rate limiting.
         """
         results: dict[int, int] = {}
@@ -284,10 +293,18 @@ class SteamAPI:
                 if not app_data.get("success"):
                     continue
                 details = app_data.get("data", {})
-                categories = {c.get("id") for c in details.get("categories", [])}
 
-                if categories & _MULTIPLAYER_CATEGORY_IDS:
-                    results[app_id] = 4  # Conservative multiplayer default
+                # Skip non-game items (DLC, soundtracks, tools, etc.)
+                if details.get("type") != "game":
+                    results[app_id] = 1
+                    continue
+
+                categories_list = details.get("categories", [])
+                cat_ids = {c.get("id") for c in categories_list}
+                cat_descs = {c.get("description", "").lower() for c in categories_list}
+
+                if (cat_ids & _MULTIPLAYER_CATEGORY_IDS) or (cat_descs & _MULTIPLAYER_DESCRIPTIONS):
+                    results[app_id] = -1  # Multiplayer, count unknown
                 else:
                     results[app_id] = 1  # Single-player only
             except Exception as e:
@@ -297,7 +314,7 @@ class SteamAPI:
             if i < len(app_ids) - 1:
                 await asyncio.sleep(1.0)
 
-        mp_count = sum(1 for v in results.values() if v > 1)
+        mp_count = sum(1 for v in results.values() if v == -1)
         logger.info(
             "[steam] Multiplayer check: %d/%d apps — %d multiplayer, %d single-player",
             len(results), len(app_ids), mp_count, len(results) - mp_count,

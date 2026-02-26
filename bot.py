@@ -174,39 +174,70 @@ class GamerSelect(discord.ui.Select):
         except Exception as e:
             await interaction.channel.send(f"Warning: Could not fetch player counts: {e}")
 
-        # Step 4: Find common games with player count filter
+        # Step 4: Find common games — known counts + unknown multiplayer
         common_games = await finder.find_common_games(steam_ids, player_count)
+        unknown_games = await db.find_common_games_unknown(steam_ids)
 
-        if not common_games:
+        if not common_games and not unknown_games:
             await interaction.channel.send(
                 f"No games found that all **{len(resolved_names)}** gamers own "
-                f"with **{player_count}+** player support."
+                f"with multiplayer support."
             )
             return
 
         # Build response embed
         embed = discord.Embed(
             title=f"Game Night: {', '.join(resolved_names)}",
-            description=f"Games all {len(resolved_names)} gamers own with {player_count}+ player support:",
             color=0x66C0F4,
         )
 
-        game_lines = []
-        for g in common_games:
-            store_url = f"https://store.steampowered.com/app/{g['app_id']}"
-            game_lines.append(f"[{g['name']}]({store_url}) — up to **{g['max_players']}** players")
+        # Section 1: Games with confirmed player counts
+        if common_games:
+            game_lines = []
+            for g in common_games:
+                store_url = f"https://store.steampowered.com/app/{g['app_id']}"
+                game_lines.append(
+                    f"[{g['name']}]({store_url}) — up to **{g['max_players']}** players"
+                )
 
-        chunk_size = 15
-        if len(game_lines) <= chunk_size:
-            embed.description += "\n\n" + "\n".join(game_lines)
+            embed.description = (
+                f"Games all {len(resolved_names)} gamers own with "
+                f"{player_count}+ player support:\n\n"
+                + "\n".join(game_lines[:15])
+            )
+            if len(game_lines) > 15:
+                for i in range(15, len(game_lines), 15):
+                    chunk = game_lines[i : i + 15]
+                    embed.add_field(
+                        name=f"Page {i // 15 + 1}",
+                        value="\n".join(chunk),
+                        inline=False,
+                    )
         else:
-            embed.description += f"\n\n**{len(game_lines)} games found:**"
-            for i in range(0, len(game_lines), chunk_size):
-                chunk = game_lines[i : i + chunk_size]
-                field_name = f"Page {i // chunk_size + 1}"
-                embed.add_field(name=field_name, value="\n".join(chunk), inline=False)
+            embed.description = (
+                f"No games with confirmed {player_count}+ player support found."
+            )
 
-        embed.set_footer(text=f"{len(common_games)} game(s) found")
+        # Section 2: Multiplayer games with unknown player count
+        if unknown_games:
+            unknown_lines = []
+            for g in unknown_games[:10]:
+                store_url = f"https://store.steampowered.com/app/{g['app_id']}"
+                unknown_lines.append(f"[{g['name']}]({store_url})")
+
+            label = "Multiplayer — player count unknown"
+            if len(unknown_games) > 10:
+                label += f" (showing 10 of {len(unknown_games)})"
+            embed.add_field(
+                name=label,
+                value="\n".join(unknown_lines) + "\n\nUse `/override` to set player counts.",
+                inline=False,
+            )
+
+        total = len(common_games) + len(unknown_games)
+        embed.set_footer(
+            text=f"{len(common_games)} confirmed + {len(unknown_games)} unknown = {total} game(s)"
+        )
         await interaction.channel.send(embed=embed)
 
 
@@ -312,7 +343,12 @@ async def cmd_gameinfo(interaction: discord.Interaction, game_name: str):
     for row in rows[:5]:
         store_url = f"https://store.steampowered.com/app/{row['app_id']}"
         mp = row["max_players"]
-        player_info = f"**{mp}** players" if mp else "Unknown"
+        if mp == -1:
+            player_info = "**Multiplayer** (count unknown)"
+        elif mp and mp > 0:
+            player_info = f"**{mp}** players"
+        else:
+            player_info = "Unknown"
         embed.add_field(
             name=row["name"],
             value=f"Max co-op: {player_info}\n[Store page]({store_url})",

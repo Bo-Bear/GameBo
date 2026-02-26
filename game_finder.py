@@ -92,22 +92,19 @@ class GameFinder:
                 await self.db.update_max_players_bulk(steam_results)
                 updated += len(steam_results)
 
-            # Try IGDB for better player counts on multiplayer games
-            multiplayer_ids = [aid for aid, mp in steam_results.items() if mp > 1]
+            # Try IGDB for exact player counts on multiplayer games
+            multiplayer_ids = [aid for aid, mp in steam_results.items() if mp != 1]
             if multiplayer_ids:
                 try:
-                    igdb_results = await self.igdb.get_max_players_batch(multiplayer_ids)
-                    # Only update if IGDB gives a higher count than our default
-                    better = {
-                        aid: mp
-                        for aid, mp in igdb_results.items()
-                        if mp > steam_results.get(aid, 0)
-                    }
-                    if better:
-                        await self.db.update_max_players_bulk(better)
+                    steam_names = await self.db.get_game_names(multiplayer_ids)
+                    igdb_results = await self.igdb.get_max_players_batch(
+                        multiplayer_ids, steam_names=steam_names
+                    )
+                    if igdb_results:
+                        await self.db.update_max_players_bulk(igdb_results)
                         logger.info(
-                            "[player_counts] IGDB improved counts for %d games",
-                            len(better),
+                            "[player_counts] IGDB provided counts for %d games",
+                            len(igdb_results),
                         )
                 except Exception as e:
                     logger.warning("[player_counts] IGDB lookup failed (non-critical): %s", e)

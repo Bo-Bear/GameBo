@@ -93,6 +93,16 @@ class Database:
             rows = await cursor.fetchall()
             return [row["app_id"] for row in rows]
 
+    async def get_game_names(self, app_ids: list[int]) -> dict[int, str]:
+        """Get game names for a list of app_ids."""
+        if not app_ids:
+            return {}
+        placeholders = ",".join("?" for _ in app_ids)
+        query = f"SELECT app_id, name FROM games WHERE app_id IN ({placeholders})"
+        async with self._db.execute(query, app_ids) as cursor:
+            rows = await cursor.fetchall()
+            return {row["app_id"]: row["name"] for row in rows}
+
     # -- Gamer library operations --
 
     async def set_gamer_library(self, steam_id: str, app_ids: list[int]):
@@ -194,6 +204,32 @@ class Database:
         async with self._db.execute(query, params) as cursor:
             rows = await cursor.fetchall()
             logger.info("[db] Common games with %d+ players: %d", min_players, len(rows))
+            return [
+                {"app_id": row["app_id"], "name": row["name"], "max_players": row["max_players"]}
+                for row in rows
+            ]
+
+    async def find_common_games_unknown(self, steam_ids: list[str]) -> list[dict]:
+        """Find games owned by ALL gamers with max_players = -1 (multiplayer, count unknown).
+
+        These are games Steam confirmed as multiplayer but no exact player
+        count is available from IGDB or overrides.
+        """
+        if not steam_ids:
+            return []
+        placeholders = ",".join("?" for _ in steam_ids)
+        query = f"""
+            SELECT g.app_id, g.name, g.max_players
+            FROM gamer_games gg
+            JOIN games g ON gg.app_id = g.app_id
+            WHERE gg.steam_id IN ({placeholders})
+              AND g.max_players = -1
+            GROUP BY g.app_id
+            HAVING COUNT(DISTINCT gg.steam_id) = ?
+            ORDER BY g.name
+        """
+        async with self._db.execute(query, [*steam_ids, len(steam_ids)]) as cursor:
+            rows = await cursor.fetchall()
             return [
                 {"app_id": row["app_id"], "name": row["name"], "max_players": row["max_players"]}
                 for row in rows
