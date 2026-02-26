@@ -153,76 +153,59 @@ class IGDBClient:
 
         return results
 
-    async def find_multiplayer_games(self, min_players: int, limit: int = 100) -> list[dict]:
-        """Find popular games with multiplayer support for at least min_players.
+    async def map_steam_appids(self, steam_app_ids: list[int]) -> dict[int, int]:
+        """Map Steam app IDs to IGDB game IDs via external_games endpoint.
 
-        Uses separate queries (not field expansion) for reliability.
-        Returns a list of dicts with keys: name, steam_app_id, max_players.
+        Uses category = 1 (Steam) in IGDB's external_games table.
+        Returns a dict mapping steam_app_id -> igdb_game_id.
         """
-        # Step 1: Get popular games that have multiplayer modes
-        games_query = (
-            "fields id, name; "
-            "where multiplayer_modes != null & category = 0; "
-            "sort total_rating_count desc; "
-            "limit 500;"
-        )
-        games = await self._query("games", games_query)
-        if not games:
-            return []
+        result: dict[int, int] = {}
 
-        game_ids_str = ",".join(str(g["id"]) for g in games)
-        game_names = {g["id"]: g.get("name", "Unknown") for g in games}
-
-        # Step 2: Get multiplayer modes for those games (separate query)
-        modes_query = (
-            f"fields game, onlinecoopmax, onlinemax, offlinecoopmax, offlinemax; "
-            f"where game = ({game_ids_str}); limit 500;"
-        )
-        modes = await self._query("multiplayer_modes", modes_query)
-
-        # Build game_id -> max_players mapping
-        game_player_counts: dict[int, int] = {}
-        for mode in modes:
-            game_id = mode.get("game")
-            if not game_id:
-                continue
-            mp = (
-                mode.get("onlinecoopmax")
-                or mode.get("onlinemax")
-                or mode.get("offlinecoopmax")
-                or mode.get("offlinemax")
-                or 0
+        for i in range(0, len(steam_app_ids), self.MAX_BATCH_SIZE):
+            batch = steam_app_ids[i : i + self.MAX_BATCH_SIZE]
+            uid_list = ",".join(f'"{aid}"' for aid in batch)
+            query = (
+                f"fields uid, game; "
+                f"where uid = ({uid_list}) & category = 1; "
+                f"limit {len(batch)};"
             )
-            if mp >= min_players:
-                game_player_counts[game_id] = max(game_player_counts.get(game_id, 0), mp)
+            rows = await self._query("external_games", query)
+            for row in rows:
+                try:
+                    result[int(row["uid"])] = int(row["game"])
+                except (ValueError, TypeError, KeyError):
+                    continue
 
-        if not game_player_counts:
-            return []
+        return result
 
-        # Step 3: Get Steam app IDs for matching games (separate query)
-        matching_ids_str = ",".join(str(gid) for gid in game_player_counts)
-        ext_query = (
-            f"fields uid, game; "
-            f"where game = ({matching_ids_str}) & category = 1; "
-            f"limit 500;"
-        )
-        external_games = await self._query("external_games", ext_query)
+    async def get_multiplayer_max_players(self, igdb_game_ids: list[int]) -> dict[int, int]:
+        """Get max supported player counts from IGDB multiplayer_modes.
 
-        # Step 4: Combine everything
-        results = []
-        for eg in external_games:
-            game_id = eg.get("game")
-            uid = eg.get("uid")
-            if not game_id or not uid or game_id not in game_player_counts:
-                continue
-            try:
-                steam_app_id = int(uid)
-            except (ValueError, TypeError):
-                continue
-            results.append({
-                "name": game_names.get(game_id, "Unknown"),
-                "steam_app_id": steam_app_id,
-                "max_players": game_player_counts[game_id],
-            })
+        Returns a dict mapping igdb_game_id -> max_players.
+        Computes max across onlinemax, onlinecoopmax, offlinemax, offlinecoopmax.
+        """
+        result: dict[int, int] = {}
 
-        return results[:limit]
+        for i in range(0, len(igdb_game_ids), self.MAX_BATCH_SIZE):
+            batch = igdb_game_ids[i : i + self.MAX_BATCH_SIZE]
+            ids_str = ",".join(str(gid) for gid in batch)
+            query = (
+                f"fields game, onlinemax, onlinecoopmax, offlinemax, offlinecoopmax; "
+                f"where game = ({ids_str}); limit 500;"
+            )
+            rows = await self._query("multiplayer_modes", query)
+            for row in rows:
+                gid = row.get("game")
+                if gid is None:
+                    continue
+                vals = [
+                    row.get("onlinemax"),
+                    row.get("onlinecoopmax"),
+                    row.get("offlinemax"),
+                    row.get("offlinecoopmax"),
+                ]
+                vals = [v for v in vals if isinstance(v, int) and v > 0]
+                if vals:
+                    result[gid] = max(result.get(gid, 0), max(vals))
+
+        return result

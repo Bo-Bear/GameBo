@@ -1,4 +1,5 @@
 import asyncio
+import re
 
 import aiohttp
 from typing import Optional
@@ -106,39 +107,91 @@ class SteamAPI:
             return response.get("steamid")
         return None
 
+    async def search_free_games(self, num_pages: int = 4, page_size: int = 50) -> list[int]:
+        """Scrape Steam store search for free games.
+
+        Uses the store search with maxprice=free and category1=998 (Games).
+        Returns a list of Steam app IDs.
+        """
+        session = await self._get_session()
+        all_ids: set[int] = set()
+
+        for page in range(num_pages):
+            params = {
+                "category1": "998",
+                "maxprice": "free",
+                "ndl": "1",
+                "start": str(page * page_size),
+                "count": str(page_size),
+            }
+            try:
+                async with session.get(
+                    "https://store.steampowered.com/search/",
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    html = await resp.text()
+                # Extract app IDs from /app/<id>/ patterns in href attributes
+                found = set(int(m.group(1)) for m in re.finditer(r"/app/(\d+)/", html))
+                all_ids.update(found)
+            except Exception:
+                continue
+
+        return sorted(all_ids)
+
+    async def confirm_free_games(self, app_ids: list[int]) -> list[dict]:
+        """Confirm which app IDs are free games via appdetails.
+
+        Returns a list of dicts with keys: app_id, name for confirmed free games.
+        """
+        confirmed: list[dict] = []
+        session = await self._get_session()
+
+        for i in range(0, len(app_ids), 5):
+            batch = app_ids[i : i + 5]
+            results = await asyncio.gather(
+                *(self._get_appdetails(session, aid) for aid in batch)
+            )
+            for result in results:
+                if result is not None:
+                    confirmed.append(result)
+            if i + 5 < len(app_ids):
+                await asyncio.sleep(0.3)
+
+        return confirmed
+
+    async def _get_appdetails(
+        self, session: aiohttp.ClientSession, app_id: int
+    ) -> Optional[dict]:
+        """Fetch appdetails for a single app. Returns dict if free game, else None."""
+        url = "https://store.steampowered.com/api/appdetails"
+        params = {"appids": str(app_id), "l": "english", "cc": "US"}
+        try:
+            async with session.get(
+                url, params=params, timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+            app_data = data.get(str(app_id), {})
+            if not app_data.get("success"):
+                return None
+            details = app_data.get("data", {})
+            if details.get("type") != "game":
+                return None
+            if not details.get("is_free"):
+                return None
+            return {"app_id": app_id, "name": details.get("name", f"App {app_id}")}
+        except Exception:
+            return None
+
     async def check_free_apps(self, app_ids: list[int]) -> set[int]:
         """Check which Steam app IDs are free-to-play using appdetails pricing.
 
         Checks sequentially in small batches to avoid Steam rate limiting.
         Returns a set of app IDs that are free.
         """
-        free_ids: set[int] = set()
-        session = await self._get_session()
-
-        for i in range(0, len(app_ids), 5):
-            batch = app_ids[i : i + 5]
-            tasks = []
-            for app_id in batch:
-                tasks.append(self._check_one_app(session, app_id, free_ids))
-            await asyncio.gather(*tasks)
-            # Small delay between batches to avoid rate limiting
-            if i + 5 < len(app_ids):
-                await asyncio.sleep(0.3)
-
-        return free_ids
-
-    async def _check_one_app(
-        self, session: aiohttp.ClientSession, app_id: int, free_ids: set[int]
-    ):
-        url = "https://store.steampowered.com/api/appdetails"
-        params = {"appids": str(app_id), "filters": "basic"}
-        try:
-            async with session.get(url, params=params) as resp:
-                if resp.status != 200:
-                    return
-                data = await resp.json()
-            app_data = data.get(str(app_id), {})
-            if app_data.get("success") and app_data.get("data", {}).get("is_free"):
-                free_ids.add(app_id)
-        except Exception:
-            pass
+        confirmed = await self.confirm_free_games(app_ids)
+        return {g["app_id"] for g in confirmed}

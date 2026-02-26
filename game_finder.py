@@ -84,29 +84,49 @@ class GameFinder:
     ) -> list[dict]:
         """Find free-to-play games that support at least min_players players.
 
-        Queries IGDB for popular multiplayer games, then checks Steam pricing
-        to filter down to only free-to-play titles.
+        Pipeline (Steam-first for reliable pricing):
+        1. Scrape Steam store search for free games (authoritative source)
+        2. Confirm free + get names via appdetails
+        3. Map Steam app IDs -> IGDB game IDs via external_games
+        4. Get multiplayer mode data from IGDB
+        5. Filter by min_players and return
+
         Returns a list of dicts with keys: name, app_id, max_players.
         """
-        # Step 1: Get popular multiplayer games from IGDB with Steam IDs
-        candidates = await self.igdb.find_multiplayer_games(min_players)
-        if not candidates:
+        # Step 1: Get candidate free game app IDs from Steam search
+        candidate_ids = await self.steam.search_free_games()
+        if not candidate_ids:
             return []
 
-        # Step 2: Check which are free on Steam
-        app_ids = [g["steam_app_id"] for g in candidates]
-        free_ids = await self.steam.check_free_apps(app_ids)
+        # Step 2: Confirm free + get names via appdetails
+        confirmed = await self.steam.confirm_free_games(candidate_ids)
+        if not confirmed:
+            return []
 
-        # Step 3: Filter to only free games
-        results = [
-            {
-                "name": g["name"],
-                "app_id": g["steam_app_id"],
-                "max_players": g["max_players"],
-            }
-            for g in candidates
-            if g["steam_app_id"] in free_ids
-        ]
+        # Build app_id -> name lookup
+        app_names = {g["app_id"]: g["name"] for g in confirmed}
+        confirmed_ids = list(app_names.keys())
+
+        # Step 3: Map Steam app IDs -> IGDB game IDs
+        appid_to_igdb = await self.igdb.map_steam_appids(confirmed_ids)
+        if not appid_to_igdb:
+            return []
+
+        # Step 4: Get multiplayer modes from IGDB
+        igdb_ids = list(set(appid_to_igdb.values()))
+        igdb_to_max = await self.igdb.get_multiplayer_max_players(igdb_ids)
+
+        # Step 5: Join and filter by min_players
+        results = []
+        for app_id, igdb_id in appid_to_igdb.items():
+            max_players = igdb_to_max.get(igdb_id)
+            if max_players is None or max_players < min_players:
+                continue
+            results.append({
+                "name": app_names.get(app_id, f"App {app_id}"),
+                "app_id": app_id,
+                "max_players": max_players,
+            })
 
         results.sort(key=lambda g: (-g["max_players"], g["name"]))
         return results[:limit]
