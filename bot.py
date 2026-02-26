@@ -110,12 +110,27 @@ class GamerSelect(discord.ui.Select):
 
         # Step 1: Scan libraries for selected gamers
         scan_lines = []
+        empty_gamers = []
         for g in selected_gamers:
             try:
                 count = await finder.scan_gamer(g["steam_id"])
                 scan_lines.append(f"**{g['name']}**: {count} games")
+                if count == 0:
+                    empty_gamers.append(g["name"])
             except Exception as e:
                 scan_lines.append(f"**{g['name']}**: Error - {e}")
+                empty_gamers.append(g["name"])
+
+        if empty_gamers:
+            await interaction.followup.send(
+                "**Scanning libraries...**\n"
+                + "\n".join(scan_lines)
+                + "\n\n**Problem:** "
+                + ", ".join(empty_gamers)
+                + " returned 0 games. Their Steam library is likely set to private.\n"
+                  "Ask them to set game details to **public** in Steam → Profile → Edit Profile → Privacy Settings."
+            )
+            return
 
         steam_ids = [g["steam_id"] for g in selected_gamers]
         resolved_names = [g["name"] for g in selected_gamers]
