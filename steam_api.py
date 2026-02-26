@@ -109,26 +109,36 @@ class SteamAPI:
     async def check_free_apps(self, app_ids: list[int]) -> set[int]:
         """Check which Steam app IDs are free-to-play using appdetails pricing.
 
+        Checks sequentially in small batches to avoid Steam rate limiting.
         Returns a set of app IDs that are free.
         """
         free_ids: set[int] = set()
         session = await self._get_session()
-        semaphore = asyncio.Semaphore(5)
 
-        async def _check_one(app_id: int):
-            async with semaphore:
-                url = "https://store.steampowered.com/api/appdetails"
-                params = {"appids": str(app_id), "filters": "basic"}
-                try:
-                    async with session.get(url, params=params) as resp:
-                        if resp.status != 200:
-                            return
-                        data = await resp.json()
-                    app_data = data.get(str(app_id), {})
-                    if app_data.get("success") and app_data.get("data", {}).get("is_free"):
-                        free_ids.add(app_id)
-                except Exception:
-                    pass
+        for i in range(0, len(app_ids), 5):
+            batch = app_ids[i : i + 5]
+            tasks = []
+            for app_id in batch:
+                tasks.append(self._check_one_app(session, app_id, free_ids))
+            await asyncio.gather(*tasks)
+            # Small delay between batches to avoid rate limiting
+            if i + 5 < len(app_ids):
+                await asyncio.sleep(0.3)
 
-        await asyncio.gather(*(_check_one(aid) for aid in app_ids))
         return free_ids
+
+    async def _check_one_app(
+        self, session: aiohttp.ClientSession, app_id: int, free_ids: set[int]
+    ):
+        url = "https://store.steampowered.com/api/appdetails"
+        params = {"appids": str(app_id), "filters": "basic"}
+        try:
+            async with session.get(url, params=params) as resp:
+                if resp.status != 200:
+                    return
+                data = await resp.json()
+            app_data = data.get(str(app_id), {})
+            if app_data.get("success") and app_data.get("data", {}).get("is_free"):
+                free_ids.add(app_id)
+        except Exception:
+            pass

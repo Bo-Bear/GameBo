@@ -156,58 +156,73 @@ class IGDBClient:
     async def find_multiplayer_games(self, min_players: int, limit: int = 100) -> list[dict]:
         """Find popular games with multiplayer support for at least min_players.
 
-        Queries IGDB for games with multiplayer modes, expands external_games
-        to get Steam app IDs, and filters by player count.
+        Uses separate queries (not field expansion) for reliability.
         Returns a list of dicts with keys: name, steam_app_id, max_players.
         """
-        query = (
-            "fields name, "
-            "external_games.uid, external_games.category, "
-            "multiplayer_modes.onlinecoopmax, multiplayer_modes.onlinemax, "
-            "multiplayer_modes.offlinecoopmax, multiplayer_modes.offlinemax; "
-            "where multiplayer_modes != null & category = 0 & external_games != null; "
+        # Step 1: Get popular games that have multiplayer modes
+        games_query = (
+            "fields id, name; "
+            "where multiplayer_modes != null & category = 0; "
             "sort total_rating_count desc; "
             "limit 500;"
         )
-        games = await self._query("games", query)
-
+        games = await self._query("games", games_query)
         if not games:
             return []
 
-        results = []
-        for game in games:
-            # Get max player count
-            modes = game.get("multiplayer_modes", [])
-            max_players = 0
-            for mode in modes:
-                if isinstance(mode, dict):
-                    mp = (
-                        mode.get("onlinecoopmax")
-                        or mode.get("onlinemax")
-                        or mode.get("offlinecoopmax")
-                        or mode.get("offlinemax")
-                        or 0
-                    )
-                    max_players = max(max_players, mp)
+        game_ids_str = ",".join(str(g["id"]) for g in games)
+        game_names = {g["id"]: g.get("name", "Unknown") for g in games}
 
-            if max_players < min_players:
+        # Step 2: Get multiplayer modes for those games (separate query)
+        modes_query = (
+            f"fields game, onlinecoopmax, onlinemax, offlinecoopmax, offlinemax; "
+            f"where game = ({game_ids_str}); limit 500;"
+        )
+        modes = await self._query("multiplayer_modes", modes_query)
+
+        # Build game_id -> max_players mapping
+        game_player_counts: dict[int, int] = {}
+        for mode in modes:
+            game_id = mode.get("game")
+            if not game_id:
                 continue
+            mp = (
+                mode.get("onlinecoopmax")
+                or mode.get("onlinemax")
+                or mode.get("offlinecoopmax")
+                or mode.get("offlinemax")
+                or 0
+            )
+            if mp >= min_players:
+                game_player_counts[game_id] = max(game_player_counts.get(game_id, 0), mp)
 
-            # Find Steam app ID from external_games (category 1 = Steam)
-            steam_app_id = None
-            for eg in game.get("external_games", []):
-                if isinstance(eg, dict) and eg.get("category") == 1:
-                    try:
-                        steam_app_id = int(eg["uid"])
-                        break
-                    except (ValueError, TypeError, KeyError):
-                        continue
+        if not game_player_counts:
+            return []
 
-            if steam_app_id:
-                results.append({
-                    "name": game.get("name", "Unknown"),
-                    "steam_app_id": steam_app_id,
-                    "max_players": max_players,
-                })
+        # Step 3: Get Steam app IDs for matching games (separate query)
+        matching_ids_str = ",".join(str(gid) for gid in game_player_counts)
+        ext_query = (
+            f"fields uid, game; "
+            f"where game = ({matching_ids_str}) & category = 1; "
+            f"limit 500;"
+        )
+        external_games = await self._query("external_games", ext_query)
+
+        # Step 4: Combine everything
+        results = []
+        for eg in external_games:
+            game_id = eg.get("game")
+            uid = eg.get("uid")
+            if not game_id or not uid or game_id not in game_player_counts:
+                continue
+            try:
+                steam_app_id = int(uid)
+            except (ValueError, TypeError):
+                continue
+            results.append({
+                "name": game_names.get(game_id, "Unknown"),
+                "steam_app_id": steam_app_id,
+                "max_players": game_player_counts[game_id],
+            })
 
         return results[:limit]
