@@ -310,6 +310,56 @@ async def cmd_gameinfo(interaction: discord.Interaction, game_name: str):
     await interaction.followup.send(embed=embed)
 
 
+@bot.tree.command(name="freegames", description="Find free-to-play games for a given number of players")
+@app_commands.describe(
+    players="Number of players you want to play with",
+)
+async def cmd_freegames(interaction: discord.Interaction, players: int):
+    if players < 2:
+        await interaction.response.send_message("Please specify at least 2 players.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    try:
+        games = await igdb.find_free_multiplayer_games(players)
+    except Exception as e:
+        await interaction.followup.send(f"Error searching for games: {e}")
+        return
+
+    if not games:
+        await interaction.followup.send(
+            f"No free-to-play games found supporting **{players}+** players."
+        )
+        return
+
+    embed = discord.Embed(
+        title=f"Free-to-Play Games for {players}+ Players",
+        color=0x2ECC71,
+    )
+
+    game_lines = []
+    for g in games:
+        url = g["url"]
+        if url:
+            game_lines.append(f"[{g['name']}]({url}) — up to **{g['max_players']}** players")
+        else:
+            game_lines.append(f"{g['name']} — up to **{g['max_players']}** players")
+
+    chunk_size = 15
+    if len(game_lines) <= chunk_size:
+        embed.description = "\n".join(game_lines)
+    else:
+        embed.description = f"**{len(game_lines)} games found:**"
+        for i in range(0, len(game_lines), chunk_size):
+            chunk = game_lines[i : i + chunk_size]
+            field_name = f"Page {i // chunk_size + 1}"
+            embed.add_field(name=field_name, value="\n".join(chunk), inline=False)
+
+    embed.set_footer(text=f"{len(games)} game(s) found")
+    await interaction.followup.send(embed=embed)
+
+
 @bot.tree.command(name="refresh", description="Re-fetch player counts from IGDB for games missing data")
 async def cmd_refresh(interaction: discord.Interaction):
     await interaction.response.defer(thinking=True)

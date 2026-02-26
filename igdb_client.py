@@ -152,3 +152,79 @@ class IGDBClient:
                 results[steam_id] = max(results.get(steam_id, 0), max_players)
 
         return results
+
+    async def find_free_multiplayer_games(
+        self, min_players: int, limit: int = 25
+    ) -> list[dict]:
+        """Find free-to-play games that support at least min_players players.
+
+        Returns a list of dicts with keys: name, url, max_players.
+        """
+        # Step 1: Find keyword IDs for "free to play" variants
+        kw_query = (
+            'fields id; '
+            'where name ~ "free to play" | name ~ "free-to-play" | name ~ "f2p"; '
+            'limit 20;'
+        )
+        kw_results = await self._query("keywords", kw_query)
+
+        filter_clause = ""
+        if kw_results:
+            kw_ids = ",".join(str(k["id"]) for k in kw_results)
+            filter_clause = f"keywords = ({kw_ids})"
+        else:
+            # Fallback: try themes
+            th_query = (
+                'fields id; '
+                'where name ~ "free to play" | name ~ "free-to-play"; '
+                'limit 10;'
+            )
+            th_results = await self._query("themes", th_query)
+            if th_results:
+                th_ids = ",".join(str(t["id"]) for t in th_results)
+                filter_clause = f"themes = ({th_ids})"
+
+        if not filter_clause:
+            return []
+
+        # Step 2: Query games with multiplayer mode data expanded
+        query = (
+            "fields name, url, "
+            "multiplayer_modes.onlinecoopmax, multiplayer_modes.onlinemax, "
+            "multiplayer_modes.offlinecoopmax, multiplayer_modes.offlinemax; "
+            f"where {filter_clause} "
+            "& multiplayer_modes != null "
+            "& category = 0; "
+            "sort total_rating_count desc; "
+            "limit 500;"
+        )
+        games = await self._query("games", query)
+
+        if not games:
+            return []
+
+        # Step 3: Filter by player count
+        results = []
+        for game in games:
+            modes = game.get("multiplayer_modes", [])
+            max_players = 0
+            for mode in modes:
+                if isinstance(mode, dict):
+                    mp = (
+                        mode.get("onlinecoopmax")
+                        or mode.get("onlinemax")
+                        or mode.get("offlinecoopmax")
+                        or mode.get("offlinemax")
+                        or 0
+                    )
+                    max_players = max(max_players, mp)
+
+            if max_players >= min_players:
+                results.append({
+                    "name": game.get("name", "Unknown"),
+                    "url": game.get("url", ""),
+                    "max_players": max_players,
+                })
+
+        results.sort(key=lambda g: (-g["max_players"], g["name"]))
+        return results[:limit]
