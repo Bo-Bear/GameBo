@@ -1,10 +1,13 @@
 import json
+import logging
 from pathlib import Path
 from typing import Optional
 
 from steam_api import SteamAPI
 from igdb_client import IGDBClient
 from database import Database
+
+logger = logging.getLogger(__name__)
 
 OVERRIDES_PATH = Path(__file__).parent / "player_overrides.json"
 
@@ -95,11 +98,13 @@ class GameFinder:
         """
         # Step 1: Get candidate free game app IDs from Steam search
         candidate_ids = await self.steam.search_free_games()
+        logger.info("[freegames] Step 1 - Steam search: %d candidates", len(candidate_ids))
         if not candidate_ids:
             return []
 
         # Step 2: Confirm free + get names via appdetails
         confirmed = await self.steam.confirm_free_games(candidate_ids)
+        logger.info("[freegames] Step 2 - appdetails confirmed: %d free games", len(confirmed))
         if not confirmed:
             return []
 
@@ -109,12 +114,14 @@ class GameFinder:
 
         # Step 3: Map Steam app IDs -> IGDB game IDs
         appid_to_igdb = await self.igdb.map_steam_appids(confirmed_ids)
+        logger.info("[freegames] Step 3 - IGDB mapped: %d/%d have IGDB entries", len(appid_to_igdb), len(confirmed_ids))
         if not appid_to_igdb:
             return []
 
         # Step 4: Get multiplayer modes from IGDB
         igdb_ids = list(set(appid_to_igdb.values()))
         igdb_to_max = await self.igdb.get_multiplayer_max_players(igdb_ids)
+        logger.info("[freegames] Step 4 - multiplayer modes: %d/%d have data", len(igdb_to_max), len(igdb_ids))
 
         # Step 5: Join and filter by min_players
         results = []
@@ -128,5 +135,6 @@ class GameFinder:
                 "max_players": max_players,
             })
 
+        logger.info("[freegames] Step 5 - final results: %d games with %d+ players", len(results), min_players)
         results.sort(key=lambda g: (-g["max_players"], g["name"]))
         return results[:limit]

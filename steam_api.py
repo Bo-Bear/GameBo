@@ -1,8 +1,20 @@
 import asyncio
+import logging
 import re
 
 import aiohttp
 from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+# Steam blocks bare aiohttp requests; provide a browser-like User-Agent.
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+}
 
 
 class SteamAPI:
@@ -16,7 +28,7 @@ class SteamAPI:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(headers=_HEADERS)
         return self._session
 
     async def close(self):
@@ -131,14 +143,18 @@ class SteamAPI:
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
                     if resp.status != 200:
+                        logger.warning("Steam search page %d returned HTTP %d", page, resp.status)
                         continue
                     html = await resp.text()
                 # Extract app IDs from /app/<id>/ patterns in href attributes
                 found = set(int(m.group(1)) for m in re.finditer(r"/app/(\d+)/", html))
+                logger.info("Steam search page %d: found %d app IDs", page, len(found))
                 all_ids.update(found)
-            except Exception:
+            except Exception as e:
+                logger.warning("Steam search page %d failed: %s", page, e)
                 continue
 
+        logger.info("Steam search total: %d unique free app IDs", len(all_ids))
         return sorted(all_ids)
 
     async def confirm_free_games(self, app_ids: list[int]) -> list[dict]:
@@ -174,7 +190,8 @@ class SteamAPI:
             ) as resp:
                 if resp.status != 200:
                     return None
-                data = await resp.json()
+                # content_type=None: Steam sometimes returns text/html content-type
+                data = await resp.json(content_type=None)
             app_data = data.get(str(app_id), {})
             if not app_data.get("success"):
                 return None
@@ -184,7 +201,8 @@ class SteamAPI:
             if not details.get("is_free"):
                 return None
             return {"app_id": app_id, "name": details.get("name", f"App {app_id}")}
-        except Exception:
+        except Exception as e:
+            logger.debug("appdetails failed for %s: %s", app_id, e)
             return None
 
     async def check_free_apps(self, app_ids: list[int]) -> set[int]:

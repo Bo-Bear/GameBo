@@ -1,8 +1,11 @@
 import json
+import logging
 import os
 from pathlib import Path
 
 import discord
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
