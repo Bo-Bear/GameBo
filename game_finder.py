@@ -44,10 +44,18 @@ class GameFinder:
 
         return len(games)
 
-    async def fetch_player_counts(self, progress_callback=None) -> int:
-        """Fetch max player counts from IGDB for games that are missing them.
+    async def fetch_player_counts(
+        self, target_app_ids: list[int] | None = None, progress_callback=None
+    ) -> int:
+        """Fetch max player counts for games that are missing them.
 
-        Applies manual overrides first, then queries IGDB for the rest.
+        If target_app_ids is given, uses the Steam Store API as the primary
+        source (accurate but rate-limited to ~1 req/sec — best for small lists
+        like common games).  Falls back to IGDB for exact player counts.
+
+        If target_app_ids is None (e.g. /refresh), uses IGDB only (fast bulk
+        lookup but sparse coverage).
+
         Returns the number of games updated.
         """
         # Apply manual overrides first
@@ -56,21 +64,70 @@ class GameFinder:
             await self.db.update_max_players_bulk(overrides)
 
         # Find games still missing player counts
-        missing = await self.db.get_games_missing_player_count()
+        all_missing = set(await self.db.get_games_missing_player_count())
+        if target_app_ids is not None:
+            missing = [aid for aid in target_app_ids if aid in all_missing]
+        else:
+            missing = list(all_missing)
+
         logger.info("[player_counts] Games missing player count: %d", len(missing))
         if not missing:
             return len(overrides)
 
-        if progress_callback:
-            await progress_callback(f"Looking up player counts for {len(missing)} games...")
+        updated = 0
 
-        # Query IGDB in batches
-        igdb_results = await self.igdb.get_max_players_batch(missing)
-        logger.info("[player_counts] IGDB returned player data for %d/%d games", len(igdb_results), len(missing))
-        if igdb_results:
-            await self.db.update_max_players_bulk(igdb_results)
+        if target_app_ids is not None:
+            # ── Targeted mode (gamenight): Steam primary, IGDB secondary ──
+            if progress_callback:
+                await progress_callback(
+                    f"Checking multiplayer info for {len(missing)} games via Steam Store..."
+                )
 
-        return len(overrides) + len(igdb_results)
+            steam_results = await self.steam.get_multiplayer_tags(missing)
+            logger.info(
+                "[player_counts] Steam returned data for %d/%d games",
+                len(steam_results), len(missing),
+            )
+            if steam_results:
+                await self.db.update_max_players_bulk(steam_results)
+                updated += len(steam_results)
+
+            # Try IGDB for better player counts on multiplayer games
+            multiplayer_ids = [aid for aid, mp in steam_results.items() if mp > 1]
+            if multiplayer_ids:
+                try:
+                    igdb_results = await self.igdb.get_max_players_batch(multiplayer_ids)
+                    # Only update if IGDB gives a higher count than our default
+                    better = {
+                        aid: mp
+                        for aid, mp in igdb_results.items()
+                        if mp > steam_results.get(aid, 0)
+                    }
+                    if better:
+                        await self.db.update_max_players_bulk(better)
+                        logger.info(
+                            "[player_counts] IGDB improved counts for %d games",
+                            len(better),
+                        )
+                except Exception as e:
+                    logger.warning("[player_counts] IGDB lookup failed (non-critical): %s", e)
+        else:
+            # ── Bulk mode (/refresh): IGDB only ──
+            if progress_callback:
+                await progress_callback(
+                    f"Looking up player counts for {len(missing)} games via IGDB..."
+                )
+
+            igdb_results = await self.igdb.get_max_players_batch(missing)
+            logger.info(
+                "[player_counts] IGDB returned player data for %d/%d games",
+                len(igdb_results), len(missing),
+            )
+            if igdb_results:
+                await self.db.update_max_players_bulk(igdb_results)
+                updated += len(igdb_results)
+
+        return len(overrides) + updated
 
     async def find_common_games(
         self, steam_ids: list[str], min_players: Optional[int] = None

@@ -88,21 +88,6 @@ class IGDBClient:
         Returns a dict mapping steam_app_id -> max_players.
         Only includes games where player count data was found.
         """
-        # Diagnostic: test external_games in multiple ways
-        diag_queries = {
-            "CS2 with category": 'fields uid, game, category; where uid = "730" & category = 1; limit 5;',
-            "CS2 no category": 'fields uid, game, category; where uid = "730"; limit 5;',
-            "any Steam entries": 'fields uid, game, category; where category = 1; sort id desc; limit 5;',
-            "search CS2 game": 'fields id, name, external_games; where name ~ "Counter-Strike"; limit 5;',
-        }
-        for label, q in diag_queries.items():
-            try:
-                endpoint = "games" if "search" in label else "external_games"
-                result = await self._query(endpoint, q)
-                logger.info("[igdb] Diag '%s': %s", label, result[:3] if result else "[]")
-            except Exception as e:
-                logger.warning("[igdb] Diag '%s' failed: %s", label, e)
-
         results: dict[int, int] = {}
 
         for i in range(0, len(steam_app_ids), self.MAX_BATCH_SIZE):

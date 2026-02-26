@@ -155,22 +155,26 @@ class GamerSelect(discord.ui.Select):
             except Exception as e:
                 scan_lines.append(f"**{g['name']}**: Error - {e}")
 
-        await interaction.followup.send(
-            "**Scanning libraries...**\n"
-            + "\n".join(scan_lines)
-            + "\n\nFetching player count data..."
-        )
-
-        # Step 2: Fetch player counts from IGDB
-        try:
-            await finder.fetch_player_counts()
-        except Exception as e:
-            await interaction.channel.send(f"Warning: Could not fetch player counts: {e}")
-
-        # Step 3: Find common games
         steam_ids = [g["steam_id"] for g in selected_gamers]
         resolved_names = [g["name"] for g in selected_gamers]
         player_count = len(steam_ids)
+
+        # Step 2: Find common games (unfiltered) to narrow down lookups
+        common_ids = await db.find_common_game_ids(steam_ids)
+
+        await interaction.followup.send(
+            "**Scanning libraries...**\n"
+            + "\n".join(scan_lines)
+            + f"\n\n{len(common_ids)} games in common — checking multiplayer info..."
+        )
+
+        # Step 3: Fetch player counts for common games only (Steam + IGDB)
+        try:
+            await finder.fetch_player_counts(target_app_ids=common_ids)
+        except Exception as e:
+            await interaction.channel.send(f"Warning: Could not fetch player counts: {e}")
+
+        # Step 4: Find common games with player count filter
         common_games = await finder.find_common_games(steam_ids, player_count)
 
         if not common_games:

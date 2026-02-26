@@ -125,6 +125,23 @@ class Database:
                 for row in rows
             ]
 
+    async def find_common_game_ids(self, steam_ids: list[str]) -> list[int]:
+        """Find app_ids owned by ALL given gamers (ignoring player count)."""
+        if not steam_ids:
+            return []
+        placeholders = ",".join("?" for _ in steam_ids)
+        query = f"""
+            SELECT g.app_id
+            FROM gamer_games gg
+            JOIN games g ON gg.app_id = g.app_id
+            WHERE gg.steam_id IN ({placeholders})
+            GROUP BY g.app_id
+            HAVING COUNT(DISTINCT gg.steam_id) = ?
+        """
+        async with self._db.execute(query, [*steam_ids, len(steam_ids)]) as cursor:
+            rows = await cursor.fetchall()
+            return [row["app_id"] for row in rows]
+
     async def find_common_games(self, steam_ids: list[str], min_players: int) -> list[dict]:
         """Find games owned by ALL given gamers with max_players >= min_players.
 
