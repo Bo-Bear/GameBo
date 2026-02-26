@@ -102,7 +102,7 @@ async def cmd_gamers(interaction: discord.Interaction):
         profile_url = f"https://steamcommunity.com/profiles/{steam_id}"
         embed.add_field(
             name=g["name"],
-            value=f"[Steam Profile]({profile_url})\n`{steam_id}`",
+            value=f"[Steam Profile]({profile_url})",
             inline=True,
         )
     embed.set_footer(text=f"{len(gamers)} gamer(s) configured")
