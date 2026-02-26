@@ -424,15 +424,30 @@ class FreeGamesModal(discord.ui.Modal, title="Find Free-to-Play Games"):
             store_url = f"https://store.steampowered.com/app/{g['app_id']}"
             game_lines.append(f"[{g['name']}]({store_url}) — up to **{g['max_players']}** players")
 
-        chunk_size = 15
-        if len(game_lines) <= chunk_size:
+        if len(game_lines) <= 15 and len("\n".join(game_lines)) <= 4096:
             embed.description = "\n".join(game_lines)
         else:
             embed.description = f"**{len(game_lines)} games found:**"
-            for i in range(0, len(game_lines), chunk_size):
-                chunk = game_lines[i : i + chunk_size]
-                field_name = f"Page {i // chunk_size + 1}"
-                embed.add_field(name=field_name, value="\n".join(chunk), inline=False)
+            page = 1
+            current_chunk = []
+            for line in game_lines:
+                candidate = "\n".join(current_chunk + [line])
+                if len(candidate) > 1024 and current_chunk:
+                    embed.add_field(
+                        name=f"Page {page}",
+                        value="\n".join(current_chunk),
+                        inline=False,
+                    )
+                    page += 1
+                    current_chunk = [line]
+                else:
+                    current_chunk.append(line)
+            if current_chunk:
+                embed.add_field(
+                    name=f"Page {page}",
+                    value="\n".join(current_chunk),
+                    inline=False,
+                )
 
         embed.set_footer(text=f"{len(games)} game(s) found")
         await interaction.followup.send(embed=embed)
