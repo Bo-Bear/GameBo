@@ -156,7 +156,18 @@ class SteamAPI:
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
                     if resp.status != 200:
-                        logger.warning("Steam search page %d returned HTTP %d", page, resp.status)
+                        body_preview = await resp.text()
+                        logger.warning(
+                            "Steam search page %d returned HTTP %d\n"
+                            "  URL: %s\n"
+                            "  Response headers: %s\n"
+                            "  Body (first 500 chars): %s",
+                            page,
+                            resp.status,
+                            resp.url,
+                            dict(resp.headers),
+                            body_preview[:500],
+                        )
                         continue
                     html = await resp.text()
                 # Each search result has data-ds-appid="<id>" and <span class="title">Name</span>
