@@ -109,114 +109,115 @@ async def cmd_gamers(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="scan", description="Scan Steam libraries for all gamers (or one specific gamer)")
-@app_commands.describe(gamer="Optional: scan only this gamer's library")
-@app_commands.autocomplete(gamer=gamer_autocomplete)
-async def cmd_scan(interaction: discord.Interaction, gamer: str | None = None):
-    await interaction.response.defer(thinking=True)
+class GamerSelect(discord.ui.Select):
+    """Multi-select dropdown for picking gamers."""
 
-    gamers_to_scan = []
-    if gamer:
-        g = get_gamer_by_name(gamer)
-        if not g:
-            await interaction.followup.send(f"Gamer **{gamer}** not found in config.")
+    def __init__(self):
+        gamers = load_gamers()
+        options = [
+            discord.SelectOption(label=g["name"], value=g["name"])
+            for g in gamers
+        ][:25]  # Discord max 25 options
+        super().__init__(
+            placeholder="Select gamers for game night...",
+            min_values=2,
+            max_values=len(options),
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_names = self.values
+        await interaction.response.defer(thinking=True)
+
+        # Resolve names to gamer dicts
+        selected_gamers = []
+        for name in selected_names:
+            g = get_gamer_by_name(name)
+            if g:
+                selected_gamers.append(g)
+
+        if len(selected_gamers) < 2:
+            await interaction.followup.send("Could not resolve selected gamers.")
             return
-        gamers_to_scan = [g]
-    else:
-        gamers_to_scan = load_gamers()
 
-    if not gamers_to_scan:
-        await interaction.followup.send("No gamers configured. Add them to `gamers.json`.")
-        return
+        # Step 1: Scan libraries for selected gamers
+        scan_lines = []
+        for g in selected_gamers:
+            try:
+                count = await finder.scan_gamer(g["steam_id"])
+                scan_lines.append(f"**{g['name']}**: {count} games")
+            except Exception as e:
+                scan_lines.append(f"**{g['name']}**: Error - {e}")
 
-    results = []
-    for g in gamers_to_scan:
+        await interaction.followup.send(
+            "**Scanning libraries...**\n"
+            + "\n".join(scan_lines)
+            + "\n\nFetching player count data..."
+        )
+
+        # Step 2: Fetch player counts from IGDB
         try:
-            count = await finder.scan_gamer(g["steam_id"])
-            results.append(f"**{g['name']}**: {count} games found")
+            await finder.fetch_player_counts()
         except Exception as e:
-            results.append(f"**{g['name']}**: Error - {e}")
+            await interaction.channel.send(f"Warning: Could not fetch player counts: {e}")
 
-    # Fetch player counts from IGDB
-    await interaction.followup.send(
-        "\n".join(results) + "\n\nFetching player count data from IGDB..."
-    )
+        # Step 3: Find common games
+        steam_ids = [g["steam_id"] for g in selected_gamers]
+        resolved_names = [g["name"] for g in selected_gamers]
+        player_count = len(steam_ids)
+        common_games = await finder.find_common_games(steam_ids, player_count)
 
-    try:
-        updated = await finder.fetch_player_counts()
-        await interaction.channel.send(f"Player count data updated for {updated} game(s). Scan complete!")
-    except Exception as e:
-        await interaction.channel.send(f"Warning: Could not fetch player counts from IGDB: {e}")
-
-
-@bot.tree.command(name="findgames", description="Find co-op games that all selected gamers own")
-@app_commands.describe(
-    gamers="Comma-separated gamer names (e.g. Alice, Bob, Charlie)",
-    min_players="Minimum player count (defaults to number of gamers)",
-)
-async def cmd_findgames(
-    interaction: discord.Interaction,
-    gamers: str,
-    min_players: int | None = None,
-):
-    await interaction.response.defer(thinking=True)
-
-    # Parse gamer names
-    names = [n.strip() for n in gamers.split(",") if n.strip()]
-    if len(names) < 2:
-        await interaction.followup.send("Please provide at least 2 gamer names, separated by commas.")
-        return
-
-    # Resolve names to steam IDs
-    steam_ids = []
-    resolved_names = []
-    for name in names:
-        g = get_gamer_by_name(name)
-        if not g:
-            await interaction.followup.send(
-                f"Gamer **{name}** not found. Use `/gamers` to see configured gamers."
+        if not common_games:
+            await interaction.channel.send(
+                f"No games found that all **{len(resolved_names)}** gamers own "
+                f"with **{player_count}+** player support."
             )
             return
-        steam_ids.append(g["steam_id"])
-        resolved_names.append(g["name"])
 
-    player_count = min_players if min_players else len(steam_ids)
-    common_games = await finder.find_common_games(steam_ids, player_count)
+        # Build response embed
+        embed = discord.Embed(
+            title=f"Game Night: {', '.join(resolved_names)}",
+            description=f"Games all {len(resolved_names)} gamers own with {player_count}+ player support:",
+            color=0x66C0F4,
+        )
 
-    if not common_games:
-        await interaction.followup.send(
-            f"No games found that all **{len(resolved_names)}** gamers own "
-            f"with **{player_count}+** player support.\n\n"
-            f"Tip: Run `/scan` first to ensure libraries and player counts are up to date."
+        game_lines = []
+        for g in common_games:
+            store_url = f"https://store.steampowered.com/app/{g['app_id']}"
+            game_lines.append(f"[{g['name']}]({store_url}) — up to **{g['max_players']}** players")
+
+        chunk_size = 15
+        if len(game_lines) <= chunk_size:
+            embed.description += "\n\n" + "\n".join(game_lines)
+        else:
+            embed.description += f"\n\n**{len(game_lines)} games found:**"
+            for i in range(0, len(game_lines), chunk_size):
+                chunk = game_lines[i : i + chunk_size]
+                field_name = f"Page {i // chunk_size + 1}"
+                embed.add_field(name=field_name, value="\n".join(chunk), inline=False)
+
+        embed.set_footer(text=f"{len(common_games)} game(s) found")
+        await interaction.channel.send(embed=embed)
+
+
+class GamerSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+        self.add_item(GamerSelect())
+
+
+@bot.tree.command(name="gamenight", description="Pick gamers and find co-op games you all own")
+async def cmd_gamenight(interaction: discord.Interaction):
+    gamers = load_gamers()
+    if len(gamers) < 2:
+        await interaction.response.send_message(
+            "Need at least 2 gamers in `gamers.json`.", ephemeral=True
         )
         return
-
-    # Build response embed(s)
-    embed = discord.Embed(
-        title=f"Co-op Games for {', '.join(resolved_names)}",
-        description=f"Games all {len(resolved_names)} gamers own with {player_count}+ player support:",
-        color=0x66C0F4,
+    await interaction.response.send_message(
+        "**Who's playing tonight?** Select gamers below:",
+        view=GamerSelectView(),
     )
-
-    # Chunk games into the embed (Discord limit: 4096 chars for description)
-    game_lines = []
-    for g in common_games:
-        store_url = f"https://store.steampowered.com/app/{g['app_id']}"
-        game_lines.append(f"[{g['name']}]({store_url}) — up to **{g['max_players']}** players")
-
-    # If too many games, paginate into fields
-    chunk_size = 15
-    if len(game_lines) <= chunk_size:
-        embed.description += "\n\n" + "\n".join(game_lines)
-    else:
-        embed.description += f"\n\n**{len(game_lines)} games found:**"
-        for i in range(0, len(game_lines), chunk_size):
-            chunk = game_lines[i : i + chunk_size]
-            field_name = f"Page {i // chunk_size + 1}"
-            embed.add_field(name=field_name, value="\n".join(chunk), inline=False)
-
-    embed.set_footer(text=f"{len(common_games)} game(s) found")
-    await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="override", description="Manually set the max player count for a game")
