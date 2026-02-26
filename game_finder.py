@@ -96,20 +96,14 @@ class GameFinder:
 
         Returns a list of dicts with keys: name, app_id, max_players.
         """
-        # Step 1: Get candidate free game app IDs from Steam search
-        candidate_ids = await self.steam.search_free_games()
-        logger.info("[freegames] Step 1 - Steam search: %d candidates", len(candidate_ids))
-        if not candidate_ids:
-            return []
-
-        # Step 2: Confirm free + get names via appdetails
-        confirmed = await self.steam.confirm_free_games(candidate_ids)
-        logger.info("[freegames] Step 2 - appdetails confirmed: %d free games", len(confirmed))
-        if not confirmed:
+        # Step 1: Get free games from Steam search (names included, no appdetails needed)
+        free_games = await self.steam.search_free_games()
+        logger.info("[freegames] Step 1 - Steam search: %d free games", len(free_games))
+        if not free_games:
             return []
 
         # Build app_id -> name lookup
-        app_names = {g["app_id"]: g["name"] for g in confirmed}
+        app_names = {g["app_id"]: g["name"] for g in free_games}
         confirmed_ids = list(app_names.keys())
 
         # Step 3: Map Steam app IDs -> IGDB game IDs

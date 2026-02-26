@@ -119,14 +119,17 @@ class SteamAPI:
             return response.get("steamid")
         return None
 
-    async def search_free_games(self, num_pages: int = 4, page_size: int = 50) -> list[int]:
+    async def search_free_games(self, num_pages: int = 4, page_size: int = 50) -> list[dict]:
         """Scrape Steam store search for free games.
 
         Uses the store search with maxprice=free and category1=998 (Games).
-        Returns a list of Steam app IDs.
+        Parses both app IDs and names from the HTML, avoiding the
+        rate-limited appdetails endpoint entirely.
+        Returns a list of dicts with keys: app_id, name.
         """
         session = await self._get_session()
-        all_ids: set[int] = set()
+        # app_id -> name, deduplicates across pages
+        found_games: dict[int, str] = {}
 
         for page in range(num_pages):
             params = {
@@ -146,16 +149,21 @@ class SteamAPI:
                         logger.warning("Steam search page %d returned HTTP %d", page, resp.status)
                         continue
                     html = await resp.text()
-                # Extract app IDs from /app/<id>/ patterns in href attributes
-                found = set(int(m.group(1)) for m in re.finditer(r"/app/(\d+)/", html))
-                logger.info("Steam search page %d: found %d app IDs", page, len(found))
-                all_ids.update(found)
+                # Each search result has data-ds-appid="<id>" and <span class="title">Name</span>
+                matches = re.findall(
+                    r'data-ds-appid="(\d+)".*?<span class="title">([^<]+)</span>',
+                    html,
+                    re.DOTALL,
+                )
+                for app_id_str, name in matches:
+                    found_games[int(app_id_str)] = name.strip()
+                logger.info("Steam search page %d: found %d games", page, len(matches))
             except Exception as e:
                 logger.warning("Steam search page %d failed: %s", page, e)
                 continue
 
-        logger.info("Steam search total: %d unique free app IDs", len(all_ids))
-        return sorted(all_ids)
+        logger.info("Steam search total: %d unique free games", len(found_games))
+        return [{"app_id": aid, "name": name} for aid, name in found_games.items()]
 
     async def confirm_free_games(self, app_ids: list[int]) -> list[dict]:
         """Confirm which app IDs are free games via appdetails.
